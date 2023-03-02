@@ -1,0 +1,145 @@
+import arcpy
+
+arcpy.env.workspace = 'C:\\Users\\Administrator\\Desktop\\测试数据'
+#GPS点
+points = 'C:\\Users\\Administrator\\Desktop\\测试数据\\GPS3.shp'
+points_lyr = 'C:\\Users\\Administrator\\Desktop\\测试数据\\GPS3.lyr'
+#一级道路线
+roads = 'C:\\Users\\Administrator\\Desktop\\测试数据\\一级道路(线).shp'
+arcpy.AddField_management(roads,"ID1","TEXT",field_length=20,field_is_nullable="NULLABLE")
+arcpy.CalculateField_management(roads, "ID1", '!FID!', "PYTHON_9.3")
+#50米缓冲区分析
+arcpy.MakeFeatureLayer_management(points, points_lyr)
+arcpy.SelectLayerByLocation_management (points_lyr, "WITHIN_A_DISTANCE", roads,"50 meters")
+points_selected = 'C:\\Users\\Administrator\\Desktop\\测试数据\\GPS_一级道路.shp'
+arcpy.CopyFeatures_management(points_lyr, points_selected)
+#将道路线打断成两点线
+roads_split_at_vertices = 'C:\\Users\\Administrator\\Desktop\\测试数据\\一级道路线_打断.shp'
+arcpy.management.SplitLine(roads, roads_split_at_vertices)
+#roads_split_at_vertices增加【ID2】字段
+arcpy.AddField_management(roads_split_at_vertices ,"ID2","TEXT",field_length=20,field_is_nullable="NULLABLE")
+arcpy.CalculateField_management(roads_split_at_vertices, "ID2", '!FID!', "PYTHON_9.3")
+#近邻分析
+arcpy.Near_analysis(points_selected,roads_split_at_vertices,"","true")
+#计算打断道路线角度
+roads_direction = 'C:\\Users\\Administrator\\Desktop\\测试数据\\一级道路线_角度.shp'
+arcpy.stats.DirectionalMean(roads_split_at_vertices, roads_direction, "", "ID2")
+#表连接：roads_split_at_vertices通过【FID】字段和roads_direction通过【ID2】进行连接
+arcpy.JoinField_management(roads_split_at_vertices, "FID", roads_direction, "ID2")
+#表连接：points_selected通过【Near_FID】字段和roads_split_at_vertices通过【ID2】进行连接
+arcpy.JoinField_management(points_selected, "Near_FID", roads_split_at_vertices, "ID2")
+#points_selected添加字段【角度差】
+arcpy.AddField_management(points_selected ,"角度差","Double",field_precision=15,field_scale = 6,field_is_nullable="NULLABLE")
+arcpy.CalculateField_management(points_selected, "角度差", '!GPSDirecti!- !CompassA!', "PYTHON_9.3")
+#根据【角度差】判断同向或者反向
+arcpy.AddField_management(points_selected ,"同向或反向","Text",field_length=20,field_is_nullable="NULLABLE")
+expression = "calc1(!角度差!)"
+codeBlock = """
+def calc1(angle):
+    if ((angle >=-20.0) & (angle <=20.0)) or ((angle >=-360.0) & (angle <=-340.0)) or ((angle >=340.0) & (angle <=360.0)):
+        return '同向'
+    elif ((angle >=160.0) & (angle <=200.0)) or ((angle >=-200.0) & (angle <=-160.0)):
+        return '反向'
+    else:
+        return ''
+"""
+arcpy.CalculateField_management(points_selected, "同向或反向", expression, "PYTHON_9.3", codeBlock)
+#统计同向或者反向的个数
+frequency1 = 'C:\\Users\\Administrator\\Desktop\\测试数据\\frequency1.dbf'
+arcpy.analysis.Frequency(points_selected, frequency1, ["ID1","同向或反向"], "")
+#导出同向和反向图层
+arcpy.TableSelect_analysis(frequency1, 'C:\\Users\\Administrator\\Desktop\\测试数据\\同向.dbf', '"同向或反向" = \'同向\'')
+arcpy.TableSelect_analysis(frequency1, 'C:\\Users\\Administrator\\Desktop\\测试数据\\反向.dbf', '"同向或反向" = \'反向\'')
+#roads通过【ID1】字段和同向、反向通过【ID1】进行连接
+arcpy.JoinField_management(roads, "ID1", 'C:\\Users\\Administrator\\Desktop\\测试数据\\同向.dbf', "ID1")
+arcpy.JoinField_management(roads, "ID1", 'C:\\Users\\Administrator\\Desktop\\测试数据\\反向.dbf', "ID1")
+# 增加【通行方向】字段，Frequency和Frequenc_1都大于0是“双行道”，反之是“单行单”
+arcpy.AddField_management(roads ,"通行方向","Text",field_length=20,field_is_nullable="NULLABLE")
+expression = "calc2(!Frequency!,!Frequenc_1!)"
+codeBlock = """
+def calc2(Frequency,Frequency1):
+    if (Frequency > 0) & (Frequency1 > 0):
+        return '双行道'
+    else:
+        return '单行道'
+"""
+arcpy.CalculateField_management(roads, "通行方向", expression, "PYTHON_9.3", codeBlock)
+
+
+######---------------- 判断是否可以左转或右转 ---------------------
+#将相同名字的道路融合
+roads_dissolve = 'C:\\Users\\Administrator\\Desktop\\测试数据\\一级道路融合.shp'
+arcpy.Dissolve_management(roads, roads_dissolve, ['name'], "","SINGLE_PART")
+#一级道路线转点
+roads_vertices_to_points = 'C:\\Users\\Administrator\\Desktop\\测试数据\\一级道路转点.shp'
+arcpy.FeatureVerticesToPoints_management(roads_dissolve, roads_vertices_to_points, "ALL")
+#去重
+arcpy.DeleteIdentical_management(roads_vertices_to_points, ["shape"])
+#一级道路线转点与一级道路融合进行空间连接
+spatial_join = 'C:\\Users\\Administrator\\Desktop\\测试数据\\spatial_join.shp'
+arcpy.SpatialJoin_analysis (roads_vertices_to_points, roads_dissolve, 'C:\\Users\\Administrator\\Desktop\\测试数据\\spatial_join.shp', '#', '#')
+#选择【Join_Count】大于等于2，得到一级道路交叉口
+spatial_join_lyr = 'C:\\Users\\Administrator\\Desktop\\测试数据\\spatial_join.lyr'
+arcpy.MakeFeatureLayer_management(spatial_join, spatial_join_lyr)
+arcpy.SelectLayerByAttribute_management(spatial_join_lyr, "NEW_SELECTION", "Join_Count > 2")
+cross_points = 'C:\\Users\\Administrator\\Desktop\\测试数据\\一级道路交叉口.shp'
+arcpy.CopyFeatures_management(spatial_join_lyr, cross_points)
+#增加【是否左转】和【是否右转】字段并赋值
+arcpy.AddField_management(points_selected ,"是否左转","Text",field_length=20,field_is_nullable="NULLABLE")
+arcpy.AddField_management(points_selected ,"是否右转","Text",field_length=20,field_is_nullable="NULLABLE")
+expression = "calc3(!角度差!)"
+codeBlock = """
+def calc3(angle):
+    if ((angle >=-60.0) & (angle <=-30.0)) or ((angle >=300.0) & (angle <=330.0)) :
+        return '是'
+    else:
+        return ''
+"""
+arcpy.CalculateField_management(points_selected, "是否左转", expression, "PYTHON_9.3", codeBlock)
+expression = "calc4(!角度差!)"
+codeBlock = """
+def calc4(angle):
+    if ((angle >=30.0) & (angle <=60.0)) or ((angle >=-330.0) & (angle <=-300.0)) :
+        return '是'
+    else:
+        return ''
+"""
+arcpy.CalculateField_management(points_selected, "是否右转", expression, "PYTHON_9.3", codeBlock)
+#统计左转和右转的个数
+frequency2 = 'C:\\Users\\Administrator\\Desktop\\测试数据\\frequency2.dbf'
+arcpy.analysis.Frequency(points_selected, frequency2, ["ID1","是否左转"], "")
+frequency3 = 'C:\\Users\\Administrator\\Desktop\\测试数据\\frequency3.dbf'
+arcpy.analysis.Frequency(points_selected, frequency3, ["ID1","是否右转"], "")
+#导出左转和右转图层
+arcpy.TableSelect_analysis(frequency2, 'C:\\Users\\Administrator\\Desktop\\测试数据\\左转.dbf', '"是否左转" = \'是\'')
+arcpy.TableSelect_analysis(frequency3, 'C:\\Users\\Administrator\\Desktop\\测试数据\\右转.dbf', '"是否右转" = \'是\'')
+#roads通过【ID1】字段和左转、右转通过【ID1】进行连接
+arcpy.JoinField_management(roads, "ID1", 'C:\\Users\\Administrator\\Desktop\\测试数据\\左转.dbf', "ID1")
+arcpy.JoinField_management(roads, "ID1", 'C:\\Users\\Administrator\\Desktop\\测试数据\\右转.dbf', "ID1")
+#一级道路线与道路交叉口进行空间连接
+result = 'C:\\Users\\Administrator\\Desktop\\测试数据\\result.shp'
+arcpy.SpatialJoin_analysis (roads, cross_points, 'C:\\Users\\Administrator\\Desktop\\测试数据\\result.shp', '#', '#')
+#增加【左转】和【右转】字段并赋值
+arcpy.AddField_management(result ,"左转","Text",field_length=20,field_is_nullable="NULLABLE")
+arcpy.AddField_management(result ,"右转","Text",field_length=20,field_is_nullable="NULLABLE")
+expression = "calc5(!Join_Cou_1!,!Frequenc_2!)"
+codeBlock = """
+def calc5(join_count,frequency):
+    if (join_count > 0 ) & (frequency > 0 ):
+        return '是'
+    else:
+        return '否'
+"""
+arcpy.CalculateField_management(result, "左转", expression, "PYTHON_9.3", codeBlock)
+expression = "calc6(!Join_Cou_1!,!Frequenc_3!)"
+codeBlock = """
+def calc6(join_count,frequency):
+    if (join_count > 0 ) & (frequency > 0 ):
+        return '是'
+    else:
+        return '否'
+"""
+arcpy.CalculateField_management(result, "右转", expression, "PYTHON_9.3", codeBlock)
+
+
+# result是最终结果，【通行方向】、【右转】、【左转】三个字段是最终结果字段
