@@ -143,3 +143,6 @@ arcpy.CalculateField_management(result, "右转", expression, "PYTHON_9.3", code
 
 
 # result是最终结果，【通行方向】、【右转】、【左转】三个字段是最终结果字段
+
+
+ps:根据道路上轨迹点数据流量来对每段道路进行等级判断。
